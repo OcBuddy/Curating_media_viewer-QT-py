@@ -3,7 +3,9 @@
 Simple Image & Video Viewer with Qt - Unlimited Undo
 """
 
+import json
 import shutil
+import subprocess
 import sys
 from curses import KEY_BACKSPACE
 from pathlib import Path
@@ -15,13 +17,20 @@ from PyQt6.QtMultimedia import QMediaPlayer
 from PyQt6.QtMultimediaWidgets import QVideoWidget
 from PyQt6.QtWidgets import (
     QApplication,
+    QDockWidget,
     QFileDialog,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
+    QLineEdit,
     QMainWindow,
+    QMenu,
     QMessageBox,
+    QPlainTextEdit,
     QPushButton,
     QStackedWidget,
+    QTreeWidget,
+    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -70,6 +79,7 @@ class ImageViewer(QMainWindow):
         self.btn_next = QPushButton("Next (N / → / Enter / Space)")
         self.btn_delete = QPushButton("Delete (D / Del)")
         self.btn_undo = QPushButton("Undo (U / Ctrl+Z)")
+        self.btn_metadata = QPushButton("Metadata (M)")
         self.btn_open = QPushButton("Open Folder (O)")
         self.btn_help = QPushButton("Help (F1)")
 
@@ -78,16 +88,28 @@ class ImageViewer(QMainWindow):
             self.btn_next,
             self.btn_delete,
             self.btn_undo,
+            self.btn_metadata,
             self.btn_open,
             self.btn_help,
         ):
             btn.setFont(QFont("Arial", 18, QFont.Weight.Bold))
-            btn.setMinimumHeight(200)
-            btn.setMaximumHeight(200)
+            btn.setMinimumHeight(50)
+            btn.setMaximumHeight(50)
             btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             btn_layout.addWidget(btn)
 
         main_layout.addLayout(btn_layout)
+
+        # Metadata text area
+        self.metadata_text = QPlainTextEdit()
+        self.metadata_text.setReadOnly(True)
+        self.metadata_text.setFixedHeight(250)
+        self.metadata_text.setFont(QFont("Courier New", 11))
+        self.metadata_text.setStyleSheet(
+            "QPlainTextEdit { background-color: #1e1e1e; color: #d4d4d4; border: 1px solid #333; padding: 6px; }"
+        )
+        self.metadata_text.setPlaceholderText("Loading metadata...")
+        main_layout.addWidget(self.metadata_text)
 
         # Filename label
         self.filename_label = QLabel()
@@ -104,8 +126,67 @@ class ImageViewer(QMainWindow):
         self.btn_next.clicked.connect(self.next_item)
         self.btn_delete.clicked.connect(self.delete_current)
         self.btn_undo.clicked.connect(self.undo_delete)
+        self.btn_metadata.clicked.connect(self.toggle_metadata_panel)
         self.btn_open.clicked.connect(self.open_folder_dialog)
         self.btn_help.clicked.connect(self.show_help)
+
+        # Metadata dock panel (right side, collapsed by default)
+        self.metadata_dock = QDockWidget("Metadata", self)
+        self.metadata_dock.setAllowedAreas(
+            Qt.DockWidgetArea.RightDockWidgetArea | Qt.DockWidgetArea.LeftDockWidgetArea
+        )
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.metadata_dock)
+        self.metadata_dock.hide()
+
+        self.metadata_tree = QTreeWidget()
+        self.metadata_tree.setHeaderLabels(["Key", "Value"])
+        self.metadata_tree.setAlternatingRowColors(True)
+        self.metadata_tree.setStyleSheet(
+            "QTreeWidget { background-color: #1e1e1e; color: #d4d4d4; "
+            "border: none; font: 11px 'Courier New'; }"
+            "QTreeWidget::item { padding: 3px; }"
+            "QTreeWidget::item:alternate { background-color: #2a2a2a; }"
+            "QTreeWidget::item:selected { background-color: #264f78; color: white; }"
+            "QTreeWidget::item:selected:alternate { background-color: #264f78; color: white; }"
+            "QHeaderView::section { background-color: #333; color: #d4d4d4; "
+            "padding: 4px; border: 1px solid #555; font-weight: bold; }"
+        )
+        self.metadata_tree.header().setStretchLastSection(True)
+        self.metadata_tree.setSelectionMode(
+            QTreeWidget.SelectionMode.ContiguousSelection
+        )
+        # Search bar
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("Type to filter...")
+        self.search_input.setClearButtonEnabled(True)
+        self.search_input.setStyleSheet(
+            "QLineEdit { background-color: #2a2a2a; color: #d4d4d4; "
+            "border: 1px solid #555; padding: 4px 6px; font: 11px 'Courier New'; }"
+        )
+
+        # Dock content layout
+        dock_widget = QWidget()
+        dock_layout = QVBoxLayout(dock_widget)
+        dock_layout.setContentsMargins(4, 4, 4, 4)
+        dock_layout.setSpacing(4)
+
+        search_layout = QHBoxLayout()
+        search_label = QLabel("Search keyword:")
+        search_label.setStyleSheet("color: #d4d4d4; font-weight: bold;")
+        search_layout.addWidget(search_label)
+        search_layout.addWidget(self.search_input)
+        dock_layout.addLayout(search_layout)
+        dock_layout.addWidget(self.metadata_tree)
+        self.metadata_dock.setWidget(dock_widget)
+
+        self.search_input.textChanged.connect(self.filter_metadata_tree)
+
+        self.metadata_tree.setContextMenuPolicy(
+            Qt.ContextMenuPolicy.CustomContextMenu
+        )
+        self.metadata_tree.customContextMenuRequested.connect(
+            self.show_tree_context_menu
+        )
 
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.image_label.setFocus()
@@ -174,6 +255,8 @@ class ImageViewer(QMainWindow):
         self.display_stack.setCurrentWidget(self.image_label)
         self.image_label.setText("No media files")
         self.filename_label.setText("")
+        self.metadata_text.setPlainText("")
+        self.metadata_tree.clear()
         self.setWindowTitle("Media Viewer")
         self.media_player.stop()
 
@@ -219,6 +302,129 @@ class ImageViewer(QMainWindow):
             self.display_stack.setCurrentWidget(self.video_widget)
             self.media_player.setSource(QUrl.fromLocalFile(str(path)))
             self.media_player.play()
+
+        metadata = self.get_metadata(path)
+        self.metadata_text.setPlainText(metadata)
+
+        self.metadata_tree.clear()
+        try:
+            parsed = json.loads(metadata)
+            root = QTreeWidgetItem(self.metadata_tree, ["root"])
+            root.setChildIndicatorPolicy(
+                QTreeWidgetItem.ChildIndicatorPolicy.ShowIndicator
+            )
+            self.populate_json_tree(root, parsed)
+            root.setExpanded(True)
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+        if self.search_input.text():
+            self.filter_metadata_tree(self.search_input.text())
+
+    def get_metadata(self, file_path: Path) -> str:
+        for tag in ("workflow", "comment"):
+            try:
+                result = subprocess.run(
+                    [
+                        "ffprobe",
+                        "-v", "quiet",
+                        "-hide_banner",
+                        "-print_format", "json",
+                        "-show_entries", f"format_tags={tag}",
+                        str(file_path),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                data = json.loads(result.stdout)
+                value = data.get("format", {}).get("tags", {}).get(tag, "")
+                if value and value.strip():
+                    return value.strip()
+            except Exception:
+                continue
+        return "NO DATA FOUND"
+
+    def populate_json_tree(self, parent, data):
+        if isinstance(data, dict):
+            for key, value in data.items():
+                if isinstance(value, (dict, list)):
+                    item = QTreeWidgetItem(parent, [str(key), ""])
+                    item.setChildIndicatorPolicy(
+                        QTreeWidgetItem.ChildIndicatorPolicy.ShowIndicator
+                    )
+                    self.populate_json_tree(item, value)
+                    item.setExpanded(True)
+                else:
+                    display = "null" if value is None else json.dumps(value, ensure_ascii=False)
+                    QTreeWidgetItem(parent, [str(key), display])
+        elif isinstance(data, list):
+            for i, value in enumerate(data):
+                key = f"[{i}]"
+                if isinstance(value, (dict, list)):
+                    item = QTreeWidgetItem(parent, [key, ""])
+                    item.setChildIndicatorPolicy(
+                        QTreeWidgetItem.ChildIndicatorPolicy.ShowIndicator
+                    )
+                    self.populate_json_tree(item, value)
+                    item.setExpanded(True)
+                else:
+                    display = "null" if value is None else json.dumps(value, ensure_ascii=False)
+                    QTreeWidgetItem(parent, [key, display])
+
+    def filter_metadata_tree(self, text):
+        text = text.lower()
+        root = self.metadata_tree.topLevelItem(0)
+        if not root:
+            return
+
+        def _item_matches(item):
+            for col in range(item.columnCount()):
+                if text in item.text(col).lower():
+                    return True
+            return False
+
+        def _apply_filter(item):
+            child_visible = False
+            for i in range(item.childCount()):
+                if _apply_filter(item.child(i)):
+                    child_visible = True
+            visible = _item_matches(item) or child_visible
+            item.setHidden(not visible)
+            return visible
+
+        _apply_filter(root)
+
+    def show_tree_context_menu(self, pos):
+        items = self.metadata_tree.selectedItems()
+        if not items:
+            return
+
+        menu = QMenu()
+        copy_value_action = menu.addAction("Copy Value")
+        copy_kv_action = menu.addAction("Copy Key: Value")
+
+        action = menu.exec(self.metadata_tree.mapToGlobal(pos))
+
+        if action == copy_value_action:
+            text = "\n\n".join(
+                item.text(1) for item in items if item.text(1)
+            )
+        elif action == copy_kv_action:
+            parts = []
+            for item in items:
+                key = item.text(0)
+                value = item.text(1)
+                parts.append(f"** {key} **\n{value}" if value else f"** {key} **")
+            text = "\n\n".join(parts)
+        else:
+            return
+
+        QApplication.clipboard().setText(text)
+
+    def toggle_metadata_panel(self):
+        visible = not self.metadata_dock.isVisible()
+        self.metadata_dock.setVisible(visible)
 
     # ==================== Navigation ====================
     def go_to_index(self, index: int):
@@ -341,6 +547,8 @@ class ImageViewer(QMainWindow):
             self.go_to_index(0)
         elif key in (Qt.Key.Key_D, Qt.Key.Key_Delete):
             self.delete_current()
+        elif key == Qt.Key.Key_M:
+            self.toggle_metadata_panel()
         elif key == Qt.Key.Key_U:
             self.undo_delete()
         elif key == Qt.Key.Key_O:
