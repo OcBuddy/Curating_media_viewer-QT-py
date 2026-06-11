@@ -5,6 +5,7 @@ Simple Image & Video Viewer with Qt - Unlimited Undo
 
 import json
 import shutil
+import signal
 import subprocess
 import sys
 from curses import KEY_BACKSPACE
@@ -29,6 +30,7 @@ from PyQt6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QStackedWidget,
+    QTabWidget,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -100,16 +102,36 @@ class ImageViewer(QMainWindow):
 
         main_layout.addLayout(btn_layout)
 
-        # Metadata text area
+        # Tab widget: json metadata + prompts
+        self.tab_widget = QTabWidget()
+        self.tab_widget.setFixedHeight(300)
+        tab_style = (
+            "QTabWidget::pane { background-color: #1e1e1e; border: 1px solid #333; }"
+            "QTabBar::tab { background-color: #2a2a2a; color: #d4d4d4; "
+            "padding: 6px 16px; border: 1px solid #444; border-bottom: none; }"
+            "QTabBar::tab:selected { background-color: #1e1e1e; }"
+        )
+        self.tab_widget.setStyleSheet(tab_style)
+
         self.metadata_text = QPlainTextEdit()
         self.metadata_text.setReadOnly(True)
-        self.metadata_text.setFixedHeight(250)
         self.metadata_text.setFont(QFont("Courier New", 11))
         self.metadata_text.setStyleSheet(
-            "QPlainTextEdit { background-color: #1e1e1e; color: #d4d4d4; border: 1px solid #333; padding: 6px; }"
+            "QPlainTextEdit { background-color: #1e1e1e; color: #d4d4d4; padding: 6px; }"
         )
         self.metadata_text.setPlaceholderText("Loading metadata...")
-        main_layout.addWidget(self.metadata_text)
+        self.tab_widget.addTab(self.metadata_text, "json")
+
+        self.prompts_text = QPlainTextEdit()
+        self.prompts_text.setReadOnly(True)
+        self.prompts_text.setFont(QFont("Courier New", 11))
+        self.prompts_text.setStyleSheet(
+            "QPlainTextEdit { background-color: #1e1e1e; color: #d4d4d4; padding: 6px; }"
+        )
+        self.prompts_text.setPlaceholderText("No prompt data")
+        self.tab_widget.addTab(self.prompts_text, "Prompts")
+
+        main_layout.addWidget(self.tab_widget)
 
         # Filename label
         self.filename_label = QLabel()
@@ -256,6 +278,7 @@ class ImageViewer(QMainWindow):
         self.image_label.setText("No media files")
         self.filename_label.setText("")
         self.metadata_text.setPlainText("")
+        self.prompts_text.setPlainText("")
         self.metadata_tree.clear()
         self.setWindowTitle("Media Viewer")
         self.media_player.stop()
@@ -305,6 +328,19 @@ class ImageViewer(QMainWindow):
 
         metadata = self.get_metadata(path)
         self.metadata_text.setPlainText(metadata)
+
+        # Extract prompt data
+        try:
+            parsed = json.loads(metadata)
+            prompt_data = parsed.get("prompt")
+            if prompt_data is not None:
+                self.prompts_text.setPlainText(
+                    json.dumps(prompt_data, indent=2, ensure_ascii=False)
+                )
+            else:
+                self.prompts_text.setPlainText("")
+        except (json.JSONDecodeError, TypeError):
+            self.prompts_text.setPlainText("")
 
         self.metadata_tree.clear()
         try:
@@ -563,4 +599,5 @@ if __name__ == "__main__":
     app.setStyle("Fusion")
     viewer = ImageViewer()
     viewer.show()
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
     sys.exit(app.exec())
