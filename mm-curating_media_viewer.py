@@ -120,8 +120,6 @@ class ImageViewer(QMainWindow):
             "QPlainTextEdit { background-color: #1e1e1e; color: #d4d4d4; padding: 6px; }"
         )
         self.metadata_text.setPlaceholderText("Loading metadata...")
-        self.tab_widget.addTab(self.metadata_text, "json")
-
         self.prompts_text = QPlainTextEdit()
         self.prompts_text.setReadOnly(True)
         self.prompts_text.setFont(QFont("Courier New", 11))
@@ -130,6 +128,7 @@ class ImageViewer(QMainWindow):
         )
         self.prompts_text.setPlaceholderText("No prompt data")
         self.tab_widget.addTab(self.prompts_text, "Prompts")
+        self.tab_widget.addTab(self.metadata_text, "json")
 
         main_layout.addWidget(self.tab_widget)
 
@@ -327,32 +326,35 @@ class ImageViewer(QMainWindow):
             self.media_player.play()
 
         metadata = self.get_metadata(path)
-        self.metadata_text.setPlainText(metadata)
 
-        # Extract prompt data
         try:
-            parsed = json.loads(metadata)
-            prompt_data = parsed.get("prompt")
-            if prompt_data is not None:
-                self.prompts_text.setPlainText(
-                    json.dumps(prompt_data, indent=2, ensure_ascii=False)
-                )
-            else:
-                self.prompts_text.setPlainText("")
+            parsed = self._unpack_json_strings(json.loads(metadata))
         except (json.JSONDecodeError, TypeError):
+            parsed = None
+
+        self.metadata_text.setPlainText(
+            json.dumps(parsed, indent=2, ensure_ascii=False) if parsed else metadata
+        )
+
+        # Find all prompt values at any depth
+        prompt_values = self._find_keys_named(parsed, "prompt") if parsed else []
+        if prompt_values:
+            combined = "\n\n---\n\n".join(
+                json.dumps(p, indent=2, ensure_ascii=False) if not isinstance(p, str) else p
+                for p in prompt_values
+            )
+            self.prompts_text.setPlainText(combined)
+        else:
             self.prompts_text.setPlainText("")
 
         self.metadata_tree.clear()
-        try:
-            parsed = json.loads(metadata)
+        if parsed:
             root = QTreeWidgetItem(self.metadata_tree, ["root"])
             root.setChildIndicatorPolicy(
                 QTreeWidgetItem.ChildIndicatorPolicy.ShowIndicator
             )
             self.populate_json_tree(root, parsed)
             root.setExpanded(True)
-        except (json.JSONDecodeError, TypeError):
-            pass
 
         if self.search_input.text():
             self.filter_metadata_tree(self.search_input.text())
@@ -380,6 +382,31 @@ class ImageViewer(QMainWindow):
             except Exception:
                 continue
         return "NO DATA FOUND"
+
+    def _find_keys_named(self, obj, target_key: str) -> list:
+        results = []
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                if k == target_key:
+                    results.append(v)
+                results.extend(self._find_keys_named(v, target_key))
+        elif isinstance(obj, list):
+            for item in obj:
+                results.extend(self._find_keys_named(item, target_key))
+        return results
+
+    def _unpack_json_strings(self, obj):
+        if isinstance(obj, str):
+            try:
+                parsed = json.loads(obj)
+                return self._unpack_json_strings(parsed)
+            except (json.JSONDecodeError, TypeError):
+                return obj
+        elif isinstance(obj, dict):
+            return {k: self._unpack_json_strings(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [self._unpack_json_strings(v) for v in obj]
+        return obj
 
     def populate_json_tree(self, parent, data):
         if isinstance(data, dict):
